@@ -1,0 +1,11 @@
+/target/
+/release/
+*.pdb
+*.log
+.idea/
+.vscode/
+
+# Local identities, passwords and generated configuration must never be committed.
+/config/
+/secrets/
+*.local.toml

@@ -1,0 +1,55 @@
+[package]
+name = "soundshare"
+version = "0.1.0"
+edition = "2021"
+description = "Share audio from a Windows application to a TeamSpeak channel"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "soundshare-gui"
+path = "src/bin/soundshare-gui.rs"
+test = false
+bench = false
+
+[dependencies]
+anyhow = "1"
+audiopus = "0.3.0-rc.0"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+slog = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tsclientlib = { path = "vendor/tsclientlib-0.2.0", default-features = false, features = ["unstable"] }
+tsproto-packets = "0.1"
+wasapi = "0.24.0"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# This produces the same small executable while keeping build-script settings
+# compatible with Windows Application Control on the development machine.
+[profile.dist]
+inherits = "dev"
+opt-level = "s"
+lto = true
+codegen-units = 1
+incremental = false
+panic = "abort"
+strip = true
+
+[patch.crates-io]
+tsproto = { path = "vendor/tsproto-0.2.0" }

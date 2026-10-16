@@ -1,0 +1,10 @@
+[target.x86_64-pc-windows-msvc]
+# Bundle the MSVC runtime so the GUI executable works on a clean Windows system
+# without asking the user to install the Visual C++ Redistributable.
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# audiopus_sys vendors an older Opus CMake project. New CMake releases require
+# this compatibility floor even when Cargo is invoked without build.ps1.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+CMAKE_ARGS = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
