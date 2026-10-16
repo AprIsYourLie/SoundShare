@@ -30,7 +30,7 @@
 
 ## 下载与使用
 
-双击 `SoundShare.exe` 即可运行，无需安装或额外 DLL。**GitHub Release 尚未发布**；如需自行构建，请参考 [开发指南](CONTRIBUTING.md)。
+从 [Releases](https://github.com/AprIsYourLie/SoundShare/releases) 下载 `SoundShare.exe`，双击即可运行，无需安装或额外 DLL。普通用户只需这一个 EXE；如需自行构建，请参考 [开发指南](CONTRIBUTING.md)。
 
 1. 在播放器中播放内容，点击“刷新列表”并选择音频来源；
 2. 填写 TeamSpeak 服务器地址，首次使用时地址为空；
