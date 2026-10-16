@@ -8,13 +8,7 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcessInfo {
-    pub name: String,
-    pub path: String,
-}
-
-pub fn query_process(process_id: u32) -> Option<ProcessInfo> {
+pub fn query_process_name(process_id: u32) -> Option<String> {
     if process_id == 0 {
         return None;
     }
@@ -38,12 +32,12 @@ pub fn query_process(process_id: u32) -> Option<ProcessInfo> {
     let path = OsString::from_wide(&path_buffer)
         .to_string_lossy()
         .into_owned();
-    let name = Path::new(&path)
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.clone());
-
-    Some(ProcessInfo { name, path })
+    Some(
+        Path::new(&path)
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or(path),
+    )
 }
 
 #[cfg(test)]
@@ -52,8 +46,13 @@ mod tests {
 
     #[test]
     fn current_process_can_be_queried() {
-        let info = query_process(std::process::id()).expect("current process should be queryable");
-        assert!(!info.name.is_empty());
-        assert!(!info.path.is_empty());
+        let name =
+            query_process_name(std::process::id()).expect("current process should be queryable");
+        assert!(name.ends_with(".exe"));
+    }
+
+    #[test]
+    fn system_process_has_no_application_name() {
+        assert!(query_process_name(0).is_none());
     }
 }

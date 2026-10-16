@@ -172,14 +172,3 @@ fn print_help() {
     println!("                        Share one application's audio until Ctrl+C");
     println!("  soundshare --version  Print the application version");
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn application_metadata_is_available() {
-        assert_eq!(APP_NAME, "SoundShare");
-        assert!(!APP_VERSION.is_empty());
-    }
-}

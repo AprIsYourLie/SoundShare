@@ -25,25 +25,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ReSpeak/tsclientlib"
 resolver = "2"
 
-[[bench]]
-name = "modpow"
-harness = false
-
-[[bench]]
-name = "command"
-harness = false
-
-[[bench]]
-name = "connect"
-harness = false
-
-[[bench]]
-name = "license"
-harness = false
-
-[[bench]]
-name = "message"
-harness = false
 [dependencies.aes]
 version = "0.7"
 

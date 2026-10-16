@@ -1,20 +1,20 @@
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::path::Path;
-use std::time::Duration;
 
 use wasapi::{DeviceEnumerator, Direction, SessionState};
 
 mod capture;
 mod process;
 
-pub use capture::{ApplicationCapture, CaptureSummary, STREAM_SAMPLES_PER_CHANNEL};
+pub use capture::{
+    capture_application_to_wav, start_application_capture, ApplicationCapture, CaptureSummary,
+    STREAM_SAMPLES_PER_CHANNEL,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioSession {
     pub process_id: u32,
     pub process_name: Option<String>,
-    pub process_path: Option<String>,
     pub peak: f32,
 }
 
@@ -43,15 +43,13 @@ pub fn active_render_sessions() -> Result<Vec<AudioSession>, Box<dyn Error>> {
 
             let process_id = control.get_process_id()?;
             let peak = control.get_audiometerinformation()?.get_peak_value()?;
-            let process_info = process::query_process(process_id);
 
             sessions_by_pid
                 .entry(process_id)
                 .and_modify(|session| session.peak = session.peak.max(peak))
                 .or_insert_with(|| AudioSession {
                     process_id,
-                    process_name: process_info.as_ref().map(|info| info.name.clone()),
-                    process_path: process_info.map(|info| info.path),
+                    process_name: process::query_process_name(process_id),
                     peak,
                 });
         }
@@ -67,18 +65,6 @@ pub fn active_render_sessions() -> Result<Vec<AudioSession>, Box<dyn Error>> {
     Ok(sessions)
 }
 
-pub fn capture_application_to_wav(
-    process_id: u32,
-    duration: Duration,
-    output_path: &Path,
-) -> Result<CaptureSummary, Box<dyn Error>> {
-    capture::capture_application_to_wav(process_id, duration, output_path)
-}
-
-pub fn start_application_capture(process_id: u32) -> Result<ApplicationCapture, Box<dyn Error>> {
-    capture::start_application_capture(process_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,7 +74,6 @@ mod tests {
         let session = AudioSession {
             process_id: 42,
             process_name: None,
-            process_path: None,
             peak: 0.0,
         };
 

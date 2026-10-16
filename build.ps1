@@ -30,16 +30,6 @@ if (-not $env:CMAKE -and -not (Get-Command cmake -ErrorAction SilentlyContinue))
     throw "CMake was not found. Add the CMake component in Visual Studio Build Tools."
 }
 
-$policyArgument = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
-if ($env:CMAKE_ARGS) {
-    if ($env:CMAKE_ARGS -notlike "*$policyArgument*") {
-        $env:CMAKE_ARGS = "$env:CMAKE_ARGS $policyArgument"
-    }
-} else {
-    $env:CMAKE_ARGS = $policyArgument
-}
-
 $cargoArguments = @($Action)
 if ($Release) {
     $cargoArguments += @("--profile", "dist")
