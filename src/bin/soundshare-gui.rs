@@ -405,7 +405,7 @@ unsafe fn create_controls(window: HWND, state: &mut AppState) -> windows::core::
         state.font_button = create_font(16, FW_SEMIBOLD.0 as i32);
         state.font_small = create_font(14, FW_NORMAL.0 as i32);
 
-        state.title_label = create_label(window, "SoundShare", 92, 24, 380, 34, state.font_title)?;
+        state.title_label = create_label(window, "SoundShare", 108, 37, 380, 34, state.font_title)?;
 
         state.source_heading = create_label(
             window,
@@ -635,7 +635,7 @@ unsafe fn paint_window(window: HWND, state: &AppState) {
         SelectObject(hdc, HGDIOBJ(status_pen.0));
         let _ = RoundRect(hdc, 24, 446, 676, 486, 14, 14);
 
-        let _ = DrawIconEx(hdc, 28, 24, state.app_icon, 52, 52, 0, None, DI_NORMAL);
+        let _ = DrawIconEx(hdc, 44, 28, state.app_icon, 52, 52, 0, None, DI_NORMAL);
 
         SelectObject(hdc, old_brush);
         SelectObject(hdc, old_pen);
