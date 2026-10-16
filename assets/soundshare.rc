@@ -4,8 +4,8 @@ APP_ICON ICON "assets\\soundshare.ico"
 1 24 "assets\\soundshare.manifest"
 
 1 VERSIONINFO
- FILEVERSION 0,1,0,0
- PRODUCTVERSION 0,1,0,0
+ FILEVERSION 0,1,1,0
+ PRODUCTVERSION 0,1,1,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "SoundShare Contributors\0"
             VALUE "FileDescription", "SoundShare - TeamSpeak Audio Sharing\0"
-            VALUE "FileVersion", "0.1.0\0"
+            VALUE "FileVersion", "0.1.1\0"
             VALUE "InternalName", "SoundShare\0"
             VALUE "LegalCopyright", "MIT License\0"
             VALUE "OriginalFilename", "SoundShare.exe\0"
             VALUE "ProductName", "SoundShare\0"
-            VALUE "ProductVersion", "0.1.0\0"
+            VALUE "ProductVersion", "0.1.1\0"
         END
     END
     BLOCK "VarFileInfo"

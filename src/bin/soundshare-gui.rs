@@ -114,7 +114,6 @@ struct AppState {
     start_button: HWND,
     stop_button: HWND,
     title_label: HWND,
-    subtitle_label: HWND,
     source_heading: HWND,
     connection_heading: HWND,
     status_label: HWND,
@@ -144,7 +143,6 @@ impl AppState {
             start_button: HWND::default(),
             stop_button: HWND::default(),
             title_label: HWND::default(),
-            subtitle_label: HWND::default(),
             source_heading: HWND::default(),
             connection_heading: HWND::default(),
             status_label: HWND::default(),
@@ -276,7 +274,7 @@ unsafe extern "system" fn window_proc(
                 let input_control = is_text_input_control(control);
                 let text_color = if control == state.title_label {
                     rgb(20, 29, 48)
-                } else if control == state.subtitle_label || control == state.hint_label {
+                } else if control == state.hint_label {
                     rgb(103, 113, 132)
                 } else if control == state.source_heading || control == state.connection_heading {
                     rgb(72, 78, 210)
@@ -408,15 +406,6 @@ unsafe fn create_controls(window: HWND, state: &mut AppState) -> windows::core::
         state.font_small = create_font(14, FW_NORMAL.0 as i32);
 
         state.title_label = create_label(window, "SoundShare", 92, 24, 380, 34, state.font_title)?;
-        state.subtitle_label = create_label(
-            window,
-            "把电脑中的音乐，清晰地分享至 TeamSpeak 房间",
-            92,
-            59,
-            500,
-            24,
-            state.font_body,
-        )?;
 
         state.source_heading = create_label(
             window,

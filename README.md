@@ -16,21 +16,15 @@
 - 以独立身份连接 TeamSpeak 6，听众可单独调节伴奏客户端的音量；
 - 支持默认频道、数字频道 ID，以及服务器和频道历史；
 - 连接后读取真实频道名，支持本地频道备注；
-- Rust + Windows 原生界面，普通用户只需一个 EXE，无需安装或额外 DLL。
+- Rust + Windows 原生界面。
 
 ## 运行原理
 
-```text
-指定应用 → Windows 按进程回环捕获 → SoundShare
-                                      ↓ Opus 音频
-                               TeamSpeak 服务器 → 频道成员
-```
-
-音频以 48 kHz 双声道、96 kbps Opus Music 发送，由服务器转发给听众。正常共享不保存录音，也不读取音乐平台的账号或歌单。
+SoundShare 捕获你选定应用正在播放的声音，通过一个独立的 TeamSpeak 客户端发送到频道，再由服务器转发给房间成员。你原来的 TeamSpeak 客户端可以继续正常说话，听众也能单独调节伴奏音量。共享过程不保存录音，也不读取音乐账号或歌单。
 
 ## 下载与使用
 
-从 [Releases](https://github.com/AprIsYourLie/SoundShare/releases) 下载 `SoundShare.exe`，双击即可运行，无需安装或额外 DLL。普通用户只需这一个 EXE；如需自行构建，请参考 [开发指南](CONTRIBUTING.md)。
+从 [Releases](https://github.com/AprIsYourLie/SoundShare/releases) 下载 `SoundShare.exe`，双击运行。
 
 1. 在播放器中播放内容，点击“刷新列表”并选择音频来源；
 2. 填写 TeamSpeak 服务器地址，首次使用时地址为空；
