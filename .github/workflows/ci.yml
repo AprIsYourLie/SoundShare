@@ -23,3 +23,21 @@ jobs:
       - name: Test
         shell: powershell
         run: .\build.ps1 test
+      - name: Test release integrity checks
+        shell: powershell
+        run: .\scripts\test-release.ps1
+      - name: Build and verify release package
+        shell: powershell
+        run: .\build.ps1 build -Release
+      - name: Verify packaged files independently
+        shell: powershell
+        run: .\scripts\verify-release.ps1
+      - name: Upload verified release candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundShare-Windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            release/SoundShare.exe
+            release/SoundShare-Windows-x64.zip
+            release/SHA256SUMS.txt
