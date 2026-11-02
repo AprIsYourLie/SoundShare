@@ -1,6 +1,6 @@
 [package]
 name = "soundshare"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "Share audio from a Windows application to a TeamSpeak channel"
 license = "MIT"
@@ -9,7 +9,7 @@ publish = false
 [[bin]]
 name = "soundshare-gui"
 path = "src/bin/soundshare-gui.rs"
-test = false
+test = true
 bench = false
 
 [dependencies]
@@ -30,6 +30,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

@@ -9,7 +9,7 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 use soundshare::{audio, config, teamspeak};
-use windows::core::{w, PCWSTR};
+use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
@@ -22,9 +22,15 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, CB_SETCUEBANNER, DRAWITEMSTRUCT, EM_SETCUEBANNER, ODS_DISABLED, ODS_SELECTED,
+    SetWindowTheme, TaskDialogIndirect, CB_SETCUEBANNER, DRAWITEMSTRUCT, EM_SETCUEBANNER,
+    ODS_DISABLED, ODS_SELECTED, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TDCBF_CANCEL_BUTTON,
+    TDCBF_OK_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_VERIFICATION_FLAG_CHECKED,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NIM_SETVERSION, NINF_KEY, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICONDATAW_0, NOTIFYICON_VERSION_4,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const ID_PROCESS: i32 = 1001;
@@ -35,8 +41,13 @@ const ID_NICKNAME: i32 = 1005;
 const ID_START: i32 = 1006;
 const ID_STOP: i32 = 1007;
 const ID_CHANNEL_NOTE: i32 = 1008;
+const ID_SETTINGS: i32 = 1009;
 const WM_SHARE_FINISHED: u32 = WM_APP + 1;
 const WM_CHANNEL_RESOLVED: u32 = WM_APP + 2;
+const WM_TRAY: u32 = WM_APP + 3;
+const ID_TRAY_OPEN: usize = 2001;
+const ID_TRAY_EXIT: usize = 2002;
+const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const APP_WIDTH: i32 = 720;
 const APP_HEIGHT: i32 = 610;
 
@@ -49,6 +60,18 @@ struct GuiSettings {
     nickname: String,
     server_history: Vec<String>,
     channel_history: Vec<ChannelPreset>,
+    close_action: CloseAction,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[repr(i32)]
+enum CloseAction {
+    Tray = 3002,
+    Exit,
+    #[default]
+    #[serde(other)]
+    Ask = 3000,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +112,7 @@ impl Default for GuiSettings {
             nickname: "SoundShare · 伴奏".to_string(),
             server_history: Vec::new(),
             channel_history: Vec::new(),
+            close_action: CloseAction::Ask,
         }
     }
 }
@@ -126,6 +150,10 @@ struct AppState {
     app_icon: HICON,
     status_tone: StatusTone,
     stop: Option<Arc<AtomicBool>>,
+    tray_visible: bool,
+    close_dialog_open: bool,
+    exiting: bool,
+    taskbar_created: u32,
 }
 
 impl AppState {
@@ -155,6 +183,10 @@ impl AppState {
             app_icon,
             status_tone: StatusTone::Ready,
             stop: None,
+            tray_visible: false,
+            close_dialog_open: false,
+            exiting: false,
+            taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
         }
     }
 }
@@ -247,6 +279,13 @@ unsafe extern "system" fn window_proc(
 
         let state_pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
 
+        if !state_pointer.is_null() && message != 0 && message == (*state_pointer).taskbar_created {
+            if (*state_pointer).tray_visible && !add_tray_icon(window, (*state_pointer).app_icon) {
+                restore_window(window, state_pointer);
+            }
+            return LRESULT(0);
+        }
+
         match message {
             WM_CREATE if !state_pointer.is_null() => {
                 if let Err(error) = create_controls(window, &mut *state_pointer) {
@@ -307,6 +346,34 @@ unsafe extern "system" fn window_proc(
             }
             WM_COMMAND if !state_pointer.is_null() => {
                 let control_id = (wparam.0 & 0xffff) as i32;
+                if control_id == ID_TRAY_EXIT as i32 {
+                    request_exit(window, state_pointer);
+                    return LRESULT(0);
+                }
+                if control_id == ID_TRAY_OPEN as i32 {
+                    restore_window(window, state_pointer);
+                    return LRESULT(0);
+                }
+                if control_id == ID_SETTINGS {
+                    if (*state_pointer).exiting || (*state_pointer).close_dialog_open {
+                        return LRESULT(0);
+                    }
+                    (*state_pointer).close_dialog_open = true;
+                    let choice =
+                        close_options(window, (*state_pointer).settings.close_action, true);
+                    let state_pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
+                    if !state_pointer.is_null() {
+                        (*state_pointer).close_dialog_open = false;
+                        match choice {
+                            Ok(Some((action, _))) => {
+                                remember_close_action(window, state_pointer, action);
+                            }
+                            Ok(None) => {}
+                            Err(error) => show_error(window, &format!("无法打开设置：{error}")),
+                        }
+                    }
+                    return LRESULT(0);
+                }
                 let notification_code = ((wparam.0 >> 16) & 0xffff) as u32;
                 let state = &mut *state_pointer;
                 match control_id {
@@ -358,6 +425,10 @@ unsafe extern "system" fn window_proc(
                 let state = &mut *state_pointer;
                 let result = Box::from_raw(lparam.0 as *mut String);
                 state.stop = None;
+                if state.exiting {
+                    let _ = DestroyWindow(window);
+                    return LRESULT(0);
+                }
                 set_running_state(state, false);
                 populate_server_history(state);
                 populate_channel_history(state, true);
@@ -370,13 +441,54 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             WM_CLOSE if !state_pointer.is_null() => {
-                if let Some(stop) = &(*state_pointer).stop {
-                    stop.store(true, Ordering::Release);
+                if (*state_pointer).exiting || (*state_pointer).close_dialog_open {
+                    return LRESULT(0);
                 }
-                DestroyWindow(window).ok();
+                let saved_action = (*state_pointer).settings.close_action;
+                if saved_action != CloseAction::Ask {
+                    apply_close_action(window, state_pointer, saved_action);
+                    return LRESULT(0);
+                }
+                (*state_pointer).close_dialog_open = true;
+                // The modal dialog pumps messages; do not borrow AppState across it.
+                let choice = close_options(window, CloseAction::Tray, false);
+                let state_pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
+                if state_pointer.is_null() {
+                    return LRESULT(0);
+                }
+                (*state_pointer).close_dialog_open = false;
+                match choice {
+                    Ok(Some((action, remember))) => {
+                        if !remember || remember_close_action(window, state_pointer, action) {
+                            apply_close_action(window, state_pointer, action);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => show_error(window, &format!("无法显示关闭选项：{error}")),
+                }
+                return LRESULT(0);
+            }
+            WM_TRAY if !state_pointer.is_null() => {
+                match (lparam.0 as u32) & 0xffff {
+                    WM_LBUTTONDBLCLK | NIN_KEYSELECT => restore_window(window, state_pointer),
+                    WM_CONTEXTMENU => {
+                        let x = wparam.0 as u16 as i16 as i32;
+                        let y = (wparam.0 >> 16) as u16 as i16 as i32;
+                        if let Err(error) = tray_menu(window, x, y) {
+                            let state_pointer =
+                                GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
+                            if !state_pointer.is_null() {
+                                restore_window(window, state_pointer);
+                                show_error(window, &format!("无法打开托盘菜单：{error}"));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 return LRESULT(0);
             }
             WM_DESTROY => {
+                remove_tray_icon(window);
                 PostQuitMessage(0);
                 return LRESULT(0);
             }
@@ -397,6 +509,204 @@ unsafe extern "system" fn window_proc(
     }
 }
 
+unsafe fn close_options(
+    window: HWND,
+    selected: CloseAction,
+    editing_settings: bool,
+) -> windows::core::Result<Option<(CloseAction, bool)>> {
+    let options = [
+        TASKDIALOG_BUTTON {
+            nButtonID: CloseAction::Ask as i32,
+            pszButtonText: w!("每次询问"),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: CloseAction::Tray as i32,
+            pszButtonText: w!("最小化到托盘"),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: CloseAction::Exit as i32,
+            pszButtonText: w!("退出程序"),
+        },
+    ];
+    let mut dialog = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: window,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
+        pszWindowTitle: if editing_settings {
+            w!("SoundShare 设置")
+        } else {
+            w!("SoundShare")
+        },
+        pszMainInstruction: if editing_settings {
+            w!("关闭窗口时")
+        } else {
+            w!("请选择关闭方式")
+        },
+        pszContent: w!("最小化后会继续共享，退出程序会停止共享。"),
+        ..Default::default()
+    };
+    if editing_settings {
+        dialog.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+        dialog.cRadioButtons = options.len() as u32;
+        dialog.pRadioButtons = options.as_ptr();
+        dialog.nDefaultRadioButton = selected as i32;
+    } else {
+        dialog.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_VERIFICATION_FLAG_CHECKED;
+        dialog.cButtons = 2;
+        dialog.pButtons = options[1..].as_ptr();
+        dialog.nDefaultButton = CloseAction::Tray as i32;
+        dialog.pszVerificationText = w!("每次关闭时提醒");
+    }
+    let mut button = 0;
+    let mut radio = 0;
+    let mut remind = BOOL::default();
+    unsafe {
+        TaskDialogIndirect(
+            &dialog,
+            Some(&mut button),
+            Some(&mut radio),
+            Some(&mut remind),
+        )?;
+    }
+    if editing_settings && button != IDOK.0 {
+        return Ok(None);
+    }
+    let choice = if editing_settings { radio } else { button };
+    let action = [CloseAction::Ask, CloseAction::Tray, CloseAction::Exit]
+        .into_iter()
+        .find(|action| *action as i32 == choice);
+    Ok(action.map(|action| (action, !remind.as_bool())))
+}
+
+unsafe fn remember_close_action(window: HWND, state: *mut AppState, action: CloseAction) -> bool {
+    unsafe {
+        let mut settings = (*state).settings.clone();
+        settings.close_action = action;
+        match save_settings(&settings) {
+            Ok(()) => {
+                (*state).settings.close_action = action;
+                true
+            }
+            Err(error) => {
+                show_error(window, &format!("无法保存关闭选项：{error}"));
+                false
+            }
+        }
+    }
+}
+
+unsafe fn apply_close_action(window: HWND, state: *mut AppState, action: CloseAction) {
+    unsafe {
+        match action {
+            CloseAction::Ask => {}
+            CloseAction::Tray => {
+                if add_tray_icon(window, (*state).app_icon) {
+                    (*state).tray_visible = true;
+                    let _ = ShowWindow(window, SW_HIDE);
+                } else {
+                    show_error(window, "无法创建托盘图标，窗口将保持打开。");
+                }
+            }
+            CloseAction::Exit => request_exit(window, state),
+        }
+    }
+}
+
+fn tray_data(window: HWND) -> NOTIFYICONDATAW {
+    NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: window,
+        uID: 1,
+        ..Default::default()
+    }
+}
+
+unsafe fn add_tray_icon(window: HWND, icon: HICON) -> bool {
+    let mut data = tray_data(window);
+    data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+    data.uCallbackMessage = WM_TRAY;
+    data.hIcon = icon;
+    let tip = wide("SoundShare");
+    data.szTip[..tip.len()].copy_from_slice(&tip);
+    unsafe {
+        if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+            return false;
+        }
+        data.Anonymous = NOTIFYICONDATAW_0 {
+            uVersion: NOTIFYICON_VERSION_4,
+        };
+        if !Shell_NotifyIconW(NIM_SETVERSION, &data).as_bool() {
+            remove_tray_icon(window);
+            return false;
+        }
+    }
+    true
+}
+
+unsafe fn remove_tray_icon(window: HWND) {
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_DELETE, &tray_data(window));
+    }
+}
+
+unsafe fn restore_window(window: HWND, state: *mut AppState) {
+    unsafe {
+        (*state).tray_visible = false;
+        remove_tray_icon(window);
+        let _ = ShowWindow(window, SW_RESTORE);
+        let _ = SetForegroundWindow(window);
+    }
+}
+
+unsafe fn tray_menu(window: HWND, x: i32, y: i32) -> windows::core::Result<()> {
+    unsafe {
+        let menu = CreatePopupMenu()?;
+        let result = (|| {
+            AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, w!("打开 SoundShare"))?;
+            AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, w!("退出程序"))?;
+            let _ = SetForegroundWindow(window);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                x,
+                y,
+                None,
+                window,
+                None,
+            )
+            .0;
+            let _ = PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0));
+            if command != 0 {
+                PostMessageW(
+                    Some(window),
+                    WM_COMMAND,
+                    WPARAM(command as usize),
+                    LPARAM(0),
+                )?;
+            }
+            Ok(())
+        })();
+        let _ = DestroyMenu(menu);
+        result
+    }
+}
+
+unsafe fn request_exit(window: HWND, state: *mut AppState) {
+    unsafe {
+        if (*state).exiting {
+            return;
+        }
+        (*state).exiting = true;
+        if (*state).stop.is_some() {
+            restore_window(window, state);
+            stop_sharing(&mut *state);
+            set_status(&mut *state, "●  正在停止共享并退出…", StatusTone::Working);
+        } else {
+            let _ = DestroyWindow(window);
+        }
+    }
+}
+
 unsafe fn create_controls(window: HWND, state: &mut AppState) -> windows::core::Result<()> {
     unsafe {
         state.font_title = create_font(26, FW_SEMIBOLD.0 as i32);
@@ -406,6 +716,19 @@ unsafe fn create_controls(window: HWND, state: &mut AppState) -> windows::core::
         state.font_small = create_font(14, FW_NORMAL.0 as i32);
 
         state.title_label = create_label(window, "SoundShare", 108, 37, 380, 34, state.font_title)?;
+        create_control(
+            window,
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            "设置",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+            584,
+            34,
+            92,
+            36,
+            ID_SETTINGS,
+            state.font_button,
+        )?;
 
         state.source_heading = create_label(
             window,
@@ -651,7 +974,7 @@ unsafe fn paint_window(window: HWND, state: &AppState) {
 
 unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &AppState) -> bool {
     let id = draw.CtlID as i32;
-    if id != ID_REFRESH && id != ID_START && id != ID_STOP {
+    if !matches!(id, ID_REFRESH | ID_START | ID_STOP | ID_SETTINGS) {
         return false;
     }
 
@@ -695,17 +1018,25 @@ unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &AppState) -> bool {
                 rgb(242, 196, 201),
                 "停止",
             ),
-            ID_REFRESH if pressed => (
+            _ if pressed => (
                 rgb(232, 235, 247),
                 rgb(56, 64, 91),
                 rgb(194, 201, 220),
-                "刷新列表",
+                if id == ID_SETTINGS {
+                    "设置"
+                } else {
+                    "刷新列表"
+                },
             ),
             _ => (
                 rgb(249, 250, 253),
                 rgb(56, 64, 91),
                 rgb(210, 216, 230),
-                "刷新列表",
+                if id == ID_SETTINGS {
+                    "设置"
+                } else {
+                    "刷新列表"
+                },
             ),
         };
 
@@ -1333,4 +1664,117 @@ fn resource_id(id: u16) -> PCWSTR {
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_keep_history_and_ask_before_closing() {
+        let settings: GuiSettings =
+            serde_json::from_str(r#"{"server":"example.test","server_history":["example.test"]}"#)
+                .unwrap();
+        let json = serde_json::to_value(settings).unwrap();
+        assert_eq!(json["server_history"][0], "example.test");
+        assert_eq!(json["close_action"], "ask");
+        for action in [CloseAction::Ask, CloseAction::Tray, CloseAction::Exit] {
+            let settings = GuiSettings {
+                close_action: action,
+                ..GuiSettings::default()
+            };
+            let restored: GuiSettings =
+                serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            assert_eq!(restored.close_action, action);
+        }
+        let future_settings: GuiSettings =
+            serde_json::from_str(r#"{"server_history":["example.test"],"close_action":"unknown"}"#)
+                .unwrap();
+        assert_eq!(future_settings.close_action, CloseAction::Ask);
+        assert_eq!(future_settings.server_history, ["example.test"]);
+    }
+
+    // A real window/message loop exercises exit without audio hardware or a server.
+    unsafe fn test_window(stop: Option<Arc<AtomicBool>>) -> HWND {
+        unsafe {
+            let window = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("SoundShare test"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let mut state = AppState::new(HICON::default());
+            state.settings = GuiSettings::default();
+            state.stop = stop;
+            SetWindowLongPtrW(
+                window,
+                GWLP_USERDATA,
+                Box::into_raw(Box::new(state)) as isize,
+            );
+            SetWindowLongPtrW(window, GWLP_WNDPROC, window_proc as *const () as isize);
+            window
+        }
+    }
+
+    #[test]
+    fn tray_open_restores_hidden_window_without_stopping_sharing() {
+        unsafe {
+            let stop = Arc::new(AtomicBool::new(false));
+            let window = test_window(Some(Arc::clone(&stop)));
+            let state = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
+            (*state).tray_visible = true;
+            assert!(!IsWindowVisible(window).as_bool());
+            SendMessageW(
+                window,
+                WM_TRAY,
+                None,
+                Some(LPARAM(WM_LBUTTONDBLCLK as isize)),
+            );
+            let restored = !IsIconic(window).as_bool() && IsWindowVisible(window).as_bool();
+            DestroyWindow(window).unwrap();
+            assert!(restored, "tray open must restore the window");
+            assert!(!stop.load(Ordering::Acquire), "restoring must keep sharing");
+        }
+    }
+
+    #[test]
+    fn tray_exit_closes_idle_window_and_waits_for_active_worker() {
+        unsafe {
+            let idle = test_window(None);
+            SendMessageW(idle, WM_COMMAND, Some(WPARAM(2002)), None);
+            let idle_closed = !IsWindow(Some(idle)).as_bool();
+            if !idle_closed {
+                DestroyWindow(idle).unwrap();
+            }
+            assert!(idle_closed, "tray exit must close an idle window");
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let active = test_window(Some(Arc::clone(&stop)));
+            let state = GetWindowLongPtrW(active, GWLP_USERDATA) as *mut AppState;
+            (*state).settings.close_action = CloseAction::Exit;
+            SendMessageW(active, WM_CLOSE, None, None);
+            assert!(stop.load(Ordering::Acquire));
+            assert!(
+                IsWindow(Some(active)).as_bool(),
+                "keep the window alive until cleanup finishes"
+            );
+            let result = Box::into_raw(Box::new("stopped".to_string()));
+            SendMessageW(
+                active,
+                WM_SHARE_FINISHED,
+                None,
+                Some(LPARAM(result as isize)),
+            );
+            assert!(!IsWindow(Some(active)).as_bool());
+        }
+    }
 }

@@ -35,9 +35,7 @@ pub async fn test_connection(settings: ConnectionSettings) -> Result<(), Box<dyn
     let mut connection = connect(settings).await?;
     println!("Connected successfully. No audio was sent.");
 
-    connection.disconnect(DisconnectOptions::new())?;
-    let drain = connection.events().for_each(|_| futures::future::ready(()));
-    let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
+    disconnect(&mut connection).await?;
     Ok(())
 }
 
@@ -61,7 +59,21 @@ pub async fn share_application_controlled(
     stop: Arc<AtomicBool>,
     on_connected: Option<ConnectedCallback>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut connection = connect(settings).await?;
+    let connecting = connect(settings);
+    tokio::pin!(connecting);
+    let mut connection = loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tokio::select! {
+            result = &mut connecting => break result?,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    };
+    if stop.load(Ordering::Acquire) {
+        let _ = disconnect(&mut connection).await;
+        return Ok(());
+    }
     if let (Some(callback), Some(channel)) = (on_connected, current_channel(&connection)) {
         callback(channel);
     }
@@ -149,11 +161,17 @@ pub async fn share_application_controlled(
     }
 
     capture.stop();
-    let _ = connection.disconnect(DisconnectOptions::new());
-    let drain = connection.events().for_each(|_| futures::future::ready(()));
-    let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
+    let _ = disconnect(&mut connection).await;
     println!("Stopped after sending {sent_packets} audio packets.");
     run_result
+}
+
+async fn disconnect(connection: &mut Connection) -> Result<(), Box<dyn Error>> {
+    let result = connection.disconnect(DisconnectOptions::new());
+    let drain = connection.events().for_each(|_| futures::future::ready(()));
+    let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
+    result?;
+    Ok(())
 }
 
 fn current_channel(connection: &Connection) -> Option<ConnectedChannel> {
@@ -240,6 +258,58 @@ fn load_or_create_identity(path: &Path) -> Result<Identity, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn already_stopped_sharing_skips_identity_and_capture() {
+        let settings = ConnectionSettings {
+            server_address: "127.0.0.1:9987".into(),
+            nickname: "test".into(),
+            channel_id: None,
+            identity_path: std::env::current_exe().unwrap().join("identity.json"),
+        };
+        let result =
+            share_application_controlled(settings, 0, Arc::new(AtomicBool::new(true)), None).await;
+        assert!(
+            result.is_ok(),
+            "stopped sharing must skip initialization: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_during_connect_does_not_wait_for_server_timeout() {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let identity_path = std::env::temp_dir().join(format!("soundshare-cancel-{unique}.json"));
+        let settings = ConnectionSettings {
+            server_address: socket.local_addr().unwrap().to_string(),
+            nickname: "test".into(),
+            channel_id: None,
+            identity_path: identity_path.clone(),
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (result, ()) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                share_application_controlled(settings, 0, Arc::clone(&stop), None),
+            ),
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                stop.store(true, Ordering::Release);
+            },
+        );
+        let identity_created = identity_path.is_file();
+        let _ = fs::remove_file(identity_path);
+        assert!(
+            identity_created,
+            "initialization must start before cancellation"
+        );
+        result
+            .expect("stop must interrupt the pending handshake")
+            .expect("cancellation is a successful stop");
+    }
 
     #[test]
     fn default_voice_port_is_added() {
