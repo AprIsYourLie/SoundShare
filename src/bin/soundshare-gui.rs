@@ -61,6 +61,8 @@ struct GuiSettings {
     server_history: Vec<String>,
     channel_history: Vec<ChannelPreset>,
     close_action: CloseAction,
+    #[serde(default)]
+    prompt_on_close: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,7 +115,14 @@ impl Default for GuiSettings {
             server_history: Vec::new(),
             channel_history: Vec::new(),
             close_action: CloseAction::Ask,
+            prompt_on_close: true,
         }
+    }
+}
+
+impl GuiSettings {
+    fn should_prompt_on_close(&self) -> bool {
+        self.prompt_on_close || self.close_action == CloseAction::Ask
     }
 }
 
@@ -359,14 +368,18 @@ unsafe extern "system" fn window_proc(
                         return LRESULT(0);
                     }
                     (*state_pointer).close_dialog_open = true;
-                    let choice =
-                        close_options(window, (*state_pointer).settings.close_action, true);
+                    let choice = close_options(
+                        window,
+                        (*state_pointer).settings.close_action,
+                        !(*state_pointer).settings.should_prompt_on_close(),
+                        true,
+                    );
                     let state_pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
                     if !state_pointer.is_null() {
                         (*state_pointer).close_dialog_open = false;
                         match choice {
-                            Ok(Some((action, _))) => {
-                                remember_close_action(window, state_pointer, action);
+                            Ok(Some((action, remember))) => {
+                                remember_close_action(window, state_pointer, action, remember);
                             }
                             Ok(None) => {}
                             Err(error) => show_error(window, &format!("无法打开设置：{error}")),
@@ -445,13 +458,13 @@ unsafe extern "system" fn window_proc(
                     return LRESULT(0);
                 }
                 let saved_action = (*state_pointer).settings.close_action;
-                if saved_action != CloseAction::Ask {
+                if !(*state_pointer).settings.should_prompt_on_close() {
                     apply_close_action(window, state_pointer, saved_action);
                     return LRESULT(0);
                 }
                 (*state_pointer).close_dialog_open = true;
                 // The modal dialog pumps messages; do not borrow AppState across it.
-                let choice = close_options(window, CloseAction::Tray, false);
+                let choice = close_options(window, saved_action, false, false);
                 let state_pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
                 if state_pointer.is_null() {
                     return LRESULT(0);
@@ -459,7 +472,10 @@ unsafe extern "system" fn window_proc(
                 (*state_pointer).close_dialog_open = false;
                 match choice {
                     Ok(Some((action, remember))) => {
-                        if !remember || remember_close_action(window, state_pointer, action) {
+                        let saved = remember_close_action(window, state_pointer, action, remember);
+                        let state_pointer =
+                            GetWindowLongPtrW(window, GWLP_USERDATA) as *mut AppState;
+                        if !state_pointer.is_null() && (!remember || saved) {
                             apply_close_action(window, state_pointer, action);
                         }
                     }
@@ -512,13 +528,10 @@ unsafe extern "system" fn window_proc(
 unsafe fn close_options(
     window: HWND,
     selected: CloseAction,
+    remember: bool,
     editing_settings: bool,
 ) -> windows::core::Result<Option<(CloseAction, bool)>> {
     let options = [
-        TASKDIALOG_BUTTON {
-            nButtonID: CloseAction::Ask as i32,
-            pszButtonText: w!("每次询问"),
-        },
         TASKDIALOG_BUTTON {
             nButtonID: CloseAction::Tray as i32,
             pszButtonText: w!("最小化到托盘"),
@@ -543,48 +556,65 @@ unsafe fn close_options(
             w!("请选择关闭方式")
         },
         pszContent: w!("最小化后会继续共享，退出程序会停止共享。"),
+        pszVerificationText: w!("记住此选择"),
         ..Default::default()
     };
+    if remember {
+        dialog.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_VERIFICATION_FLAG_CHECKED;
+    }
     if editing_settings {
         dialog.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
         dialog.cRadioButtons = options.len() as u32;
         dialog.pRadioButtons = options.as_ptr();
-        dialog.nDefaultRadioButton = selected as i32;
+        dialog.nDefaultRadioButton = if selected == CloseAction::Ask {
+            CloseAction::Tray as i32
+        } else {
+            selected as i32
+        };
     } else {
-        dialog.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_VERIFICATION_FLAG_CHECKED;
-        dialog.cButtons = 2;
-        dialog.pButtons = options[1..].as_ptr();
-        dialog.nDefaultButton = CloseAction::Tray as i32;
-        dialog.pszVerificationText = w!("每次关闭时提醒");
+        dialog.cButtons = options.len() as u32;
+        dialog.pButtons = options.as_ptr();
+        dialog.nDefaultButton = if selected == CloseAction::Exit {
+            CloseAction::Exit as i32
+        } else {
+            CloseAction::Tray as i32
+        };
     }
     let mut button = 0;
     let mut radio = 0;
-    let mut remind = BOOL::default();
+    let mut remember = BOOL::default();
     unsafe {
         TaskDialogIndirect(
             &dialog,
             Some(&mut button),
             Some(&mut radio),
-            Some(&mut remind),
+            Some(&mut remember),
         )?;
     }
     if editing_settings && button != IDOK.0 {
         return Ok(None);
     }
     let choice = if editing_settings { radio } else { button };
-    let action = [CloseAction::Ask, CloseAction::Tray, CloseAction::Exit]
+    let action = [CloseAction::Tray, CloseAction::Exit]
         .into_iter()
         .find(|action| *action as i32 == choice);
-    Ok(action.map(|action| (action, !remind.as_bool())))
+    Ok(action.map(|action| (action, remember.as_bool())))
 }
 
-unsafe fn remember_close_action(window: HWND, state: *mut AppState, action: CloseAction) -> bool {
+unsafe fn remember_close_action(
+    window: HWND,
+    state: *mut AppState,
+    action: CloseAction,
+    remember: bool,
+) -> bool {
     unsafe {
         let mut settings = (*state).settings.clone();
         settings.close_action = action;
+        settings.prompt_on_close = !remember;
         match save_settings(&settings) {
             Ok(()) => {
                 (*state).settings.close_action = action;
+                (*state).settings.prompt_on_close = !remember;
                 true
             }
             Err(error) => {
@@ -1694,6 +1724,28 @@ mod tests {
         assert_eq!(future_settings.server_history, ["example.test"]);
     }
 
+    #[test]
+    fn close_reminder_preserves_legacy_choices_and_the_unchecked_selection() {
+        for (name, prompt) in [("ask", true), ("tray", false), ("exit", false)] {
+            let settings: GuiSettings =
+                serde_json::from_str(&format!(r#"{{"close_action":"{name}"}}"#)).unwrap();
+            assert_eq!(settings.should_prompt_on_close(), prompt);
+        }
+        for action in [CloseAction::Tray, CloseAction::Exit] {
+            for prompt in [true, false] {
+                let settings = GuiSettings {
+                    close_action: action,
+                    prompt_on_close: prompt,
+                    ..GuiSettings::default()
+                };
+                let restored: GuiSettings =
+                    serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+                assert_eq!(restored.close_action, action);
+                assert_eq!(restored.should_prompt_on_close(), prompt);
+            }
+        }
+    }
+
     // A real window/message loop exercises exit without audio hardware or a server.
     unsafe fn test_window(stop: Option<Arc<AtomicBool>>) -> HWND {
         unsafe {
@@ -1761,6 +1813,7 @@ mod tests {
             let active = test_window(Some(Arc::clone(&stop)));
             let state = GetWindowLongPtrW(active, GWLP_USERDATA) as *mut AppState;
             (*state).settings.close_action = CloseAction::Exit;
+            (*state).settings.prompt_on_close = false;
             SendMessageW(active, WM_CLOSE, None, None);
             assert!(stop.load(Ordering::Acquire));
             assert!(
