@@ -39,8 +39,14 @@ if ($Action -eq "run" -and $ProgramArguments.Count -gt 0) {
     $cargoArguments += $ProgramArguments
 }
 
-& cargo @cargoArguments
-$cargoExitCode = $LASTEXITCODE
+Push-Location $PSScriptRoot
+try {
+    & cargo @cargoArguments
+    $cargoExitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
 if ($cargoExitCode -ne 0) {
     exit $cargoExitCode
 }
@@ -60,6 +66,12 @@ if ($Action -eq "build" -and $Release) {
         (Join-Path $releaseDirectory "README.md"),
         (Join-Path $releaseDirectory "LICENSE")
     ) -DestinationPath $archivePath -Force
+    $checksumLines = foreach ($name in @("SoundShare.exe", "SoundShare-Windows-x64.zip")) {
+        $hash = (Get-FileHash -LiteralPath (Join-Path $releaseDirectory $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+        "{0}  {1}" -f $hash, $name
+    }
+    Set-Content -LiteralPath (Join-Path $releaseDirectory "SHA256SUMS.txt") -Value $checksumLines -Encoding ASCII
+    & (Join-Path $PSScriptRoot "scripts\verify-release.ps1") -ReleaseDirectory $releaseDirectory
     Write-Host "Package created: $archivePath"
 }
 
